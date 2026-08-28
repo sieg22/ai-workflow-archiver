@@ -99,21 +99,3 @@ media/output/YYYY-MM-DD/
 ├── audio/
 └── other/
 ```
-
-## Privacy
-
-Generated project folders may contain private prompts, media, URLs, and workflow metadata. Do not commit generated backup folders to a public repository.
-
-## Files to publish on GitHub
-
-```text
-archive_weavy.py
-BACKUP_WEAVY.bat
-BACKUP_WEAVY.command
-README.md
-.gitignore
-```
-
-## License
-
-No license file is included. Add an open-source license appropriate for your repository before publishing.
