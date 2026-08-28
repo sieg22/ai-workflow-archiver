@@ -51,21 +51,9 @@ Do not disable Gatekeeper system-wide.
 
 ## Clipboard detection
 
-After `Ctrl+C` or `Cmd+C`, the script now keeps the clipboard event pending until the copied workflow can actually be read.
+The archiver monitors the system clipboard and automatically detects copied Figma Weave workflow data. 
 
-For large workflows you may see:
-
-```text
-Clipboard activity detected.
-Waiting for Figma Weave to finish preparing the copied workflow...
-Workflow received.
-```
-
-`Clipboard activity detected` means the operating system has registered the copy action.
-
-`Workflow received` means the complete workflow payload has been read successfully.
-
-Large workflows may still take longer for Figma Weave to prepare and for the script to parse, but a temporarily locked or delayed clipboard should no longer cause the copy event to be silently missed.
+Large copies remain pending until the full workflow is available, and repeated copies are ignored automatically.
 
 ## Multi-chunk mode
 
