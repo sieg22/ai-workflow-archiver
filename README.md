@@ -1,4 +1,4 @@
-# AI Workflow Archiver v1.5.3
+# AI Workflow Archiver v1.5.4
 
 A local backup and migration utility for Figma Weave workflows.
 
@@ -77,8 +77,9 @@ Use Multi-chunk mode for very large workflows. Copy several overlapping selectio
 
 Overlapping chunks are recommended because they help preserve cross-chunk connections.
 
-The same delayed-clipboard retry logic is used for every chunk.
+Repeated `Ctrl+C` / `Cmd+C` copies of the same selection are collapsed automatically. They do not create additional chunk numbers or duplicate workflow data. A compact status line shows that the repeated copy was ignored while the script continues waiting for a different chunk.
 
+The same delayed-clipboard retry logic is used for every chunk.
 ## Updating an existing archive
 
 If a folder with the same project name already exists, the script asks what to do after the new workflow has been copied and parsed:

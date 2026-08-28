@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Weavy / Figma Weave Workflow Archiver v1.5.3
+Weavy / Figma Weave Workflow Archiver v1.5.4
 
 Interactive workflow (Windows and macOS):
   1. Windows: double-click BACKUP_WEAVY.bat
@@ -55,7 +55,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VERSION = "1.5.3"
+VERSION = "1.5.4"
 DEFAULT_WORKERS = 4
 
 IS_WINDOWS = os.name == "nt"
@@ -851,6 +851,68 @@ def recover_embedded_model_edges(workflow: dict) -> int:
     return recovered
 
 
+
+def workflow_chunk_fingerprint(chunk: dict) -> str:
+    """
+    Stable semantic fingerprint for one copied workflow chunk.
+
+    Top-level transient clipboard metadata is intentionally ignored. Nodes and
+    edges are sorted so re-copying the same selection is recognized even if
+    object ordering changes.
+    """
+    nodes = sorted(
+        [n for n in chunk.get("nodes", []) if isinstance(n, dict)],
+        key=lambda n: str(n.get("id") or ""),
+    )
+
+    edges = sorted(
+        [e for e in chunk.get("edges", []) if isinstance(e, dict)],
+        key=lambda e: json.dumps(
+            _edge_key(e),
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        ),
+    )
+
+    payload = json.dumps(
+        {"nodes": nodes, "edges": edges},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+_STATUS_WIDTH = 0
+
+
+def terminal_status(message: str) -> None:
+    """
+    Show a replaceable single-line status message.
+
+    Repeated clipboard events update the same terminal line instead of
+    producing a long stream of duplicate log entries.
+    """
+    global _STATUS_WIDTH
+
+    width = max(_STATUS_WIDTH, len(message))
+    sys.stdout.write("\r" + message.ljust(width))
+    sys.stdout.flush()
+    _STATUS_WIDTH = width
+
+
+def clear_terminal_status() -> None:
+    global _STATUS_WIDTH
+
+    if _STATUS_WIDTH:
+        sys.stdout.write("\r" + (" " * _STATUS_WIDTH) + "\r")
+        sys.stdout.flush()
+        _STATUS_WIDTH = 0
+
+
 def merge_workflow_chunk(
     merged: dict | None,
     chunk: dict,
@@ -877,7 +939,7 @@ def merge_workflow_chunk(
         for e in merged.get("edges", [])
     }
 
-    new_nodes = duplicate_nodes = 0
+    new_nodes = duplicate_nodes = updated_nodes = 0
     new_edges = duplicate_edges = 0
 
     for node in chunk.get("nodes", []):
@@ -887,9 +949,26 @@ def merge_workflow_chunk(
 
         if nid in node_map:
             duplicate_nodes += 1
-            node_map[nid] = merge_duplicate_node(
-                node_map[nid], node
+            previous_node = node_map[nid]
+            merged_node = merge_duplicate_node(
+                previous_node,
+                node,
             )
+
+            if json.dumps(
+                previous_node,
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            ) != json.dumps(
+                merged_node,
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            ):
+                updated_nodes += 1
+
+            node_map[nid] = merged_node
         else:
             new_nodes += 1
             node_map[nid] = copy.deepcopy(node)
@@ -908,6 +987,7 @@ def merge_workflow_chunk(
     stats = {
         "new_nodes": new_nodes,
         "duplicate_nodes": duplicate_nodes,
+        "updated_nodes": updated_nodes,
         "new_edges": new_edges,
         "duplicate_edges": duplicate_edges,
         "total_nodes": len(merged["nodes"]),
@@ -923,9 +1003,9 @@ def collect_multi_chunk_workflow(
     """
     Collect multiple overlapping Weave clipboard selections.
 
-    The same pending clipboard state used by normal mode is applied here, so a
-    chunk is not lost if the clipboard change event arrives before the large
-    chunk text is actually readable.
+    Repeated copies of an already accepted chunk are silently collapsed into a
+    replaceable one-line status. Chunk numbering advances only when a copy adds
+    or updates workflow data.
     """
     clear_clipboard()
 
@@ -939,8 +1019,7 @@ def collect_multi_chunk_workflow(
         "connections are preserved."
     )
     log(
-        "Repeated nodes/edges/generations are automatically "
-        "detected and merged."
+        "Repeated copies of the same chunk are automatically ignored."
     )
     log("")
     log(
@@ -957,13 +1036,15 @@ def collect_multi_chunk_workflow(
 
     merged = None
     chunk_count = 0
+    accepted_fingerprints: set[str] = set()
+    duplicate_copy_count = 0
+
     last_seq = clipboard_sequence_number()
     last_hash = clipboard_hash(read_clipboard_safe())
 
     pending = False
     pending_last_activity = 0.0
     last_attempt_hash = None
-    readable_announced = False
     invalid_announced = False
     invalid_grace_seconds = 2.5
 
@@ -971,6 +1052,7 @@ def collect_multi_chunk_workflow(
         hotkey = read_hotkey()
 
         if hotkey == "R":
+            clear_terminal_status()
             log("")
             log(
                 "Returning to project name. "
@@ -979,13 +1061,20 @@ def collect_multi_chunk_workflow(
             return "rename", None, None
 
         if hotkey == "X":
+            clear_terminal_status()
             log("")
             log("Multi-chunk project cancelled.")
             return "cancel", None, None
 
         if hotkey == "D":
+            clear_terminal_status()
+
             if not merged or not merged.get("nodes"):
                 log("No valid chunks have been collected yet.")
+                log(
+                    f"Waiting for chunk {chunk_count + 1}... "
+                    f"[D] Done  [R] Rename  [X] Cancel"
+                )
                 continue
 
             recovered = recover_embedded_model_edges(merged)
@@ -1025,14 +1114,11 @@ def collect_multi_chunk_workflow(
             pending = True
             pending_last_activity = now
             last_attempt_hash = None
-            readable_announced = False
             invalid_announced = False
 
-            log("")
-            log(f"Clipboard activity detected for chunk {chunk_count + 1}.")
-            log(
-                "Waiting for Figma Weave to finish preparing "
-                "the copied chunk..."
+            terminal_status(
+                f"Copy activity detected for chunk {chunk_count + 1} "
+                f"— waiting for Figma Weave..."
             )
 
         if not pending:
@@ -1047,32 +1133,78 @@ def collect_multi_chunk_workflow(
             last_attempt_hash = attempted_hash
 
         if chunk is not None and literal is not None:
-            log(f"Chunk {chunk_count + 1} received.")
-            log("Parsing chunk...")
-            log("Large chunks may take longer to process.")
+            fingerprint = workflow_chunk_fingerprint(chunk)
 
-            merged, stats = merge_workflow_chunk(merged, chunk)
+            # Exact/semantic repeated copies are the common case when a large
+            # Weave page responds slowly and the user presses copy again.
+            if fingerprint in accepted_fingerprints:
+                duplicate_copy_count += 1
+                terminal_status(
+                    f"Duplicate copy ignored (x{duplicate_copy_count}) "
+                    f"— still waiting for chunk {chunk_count + 1}..."
+                )
+
+                pending = False
+                last_attempt_hash = None
+                invalid_announced = False
+                continue
+
+            before_fingerprint = (
+                workflow_chunk_fingerprint(merged)
+                if merged is not None
+                else None
+            )
+
+            merged_candidate, stats = merge_workflow_chunk(merged, chunk)
+            after_fingerprint = workflow_chunk_fingerprint(merged_candidate)
+
+            # A different clipboard payload may still be semantically
+            # redundant. Do not assign it a new chunk number.
+            effective_change = (
+                before_fingerprint is None
+                or after_fingerprint != before_fingerprint
+            )
+
+            accepted_fingerprints.add(fingerprint)
+
+            if not effective_change:
+                duplicate_copy_count += 1
+                terminal_status(
+                    f"No new workflow data in copy (x{duplicate_copy_count}) "
+                    f"— still waiting for chunk {chunk_count + 1}..."
+                )
+
+                merged = merged_candidate
+                pending = False
+                last_attempt_hash = None
+                invalid_announced = False
+                continue
+
+            merged = merged_candidate
             chunk_count += 1
+            duplicate_copy_count = 0
 
-            log(
-                f"Chunk {chunk_count} accepted: "
-                f"{len(chunk.get('nodes', []))} nodes, "
-                f"{len(chunk.get('edges', []))} edges."
-            )
-            log(
-                f"  +{stats['new_nodes']} new nodes, "
-                f"{stats['duplicate_nodes']} duplicate nodes merged."
-            )
-            log(
-                f"  +{stats['new_edges']} new edges, "
-                f"{stats['duplicate_edges']} duplicate edges ignored."
-            )
-            log(
-                f"  Accumulated total: "
-                f"{stats['total_nodes']} nodes, "
-                f"{stats['total_edges']} edges."
-            )
-            log("")
+            clear_terminal_status()
+
+            parts = [
+                f"Chunk {chunk_count} accepted:",
+                f"+{stats['new_nodes']} nodes",
+            ]
+
+            if stats.get("updated_nodes"):
+                parts.append(
+                    f"{stats['updated_nodes']} existing node(s) updated"
+                )
+
+            parts.extend([
+                f"+{stats['new_edges']} edges",
+                (
+                    f"total {stats['total_nodes']} nodes / "
+                    f"{stats['total_edges']} edges"
+                ),
+            ])
+
+            log(" · ".join(parts))
             log(
                 f"Waiting for chunk {chunk_count + 1}... "
                 f"[D] Done  [R] Rename  [X] Cancel"
@@ -1080,30 +1212,31 @@ def collect_multi_chunk_workflow(
 
             pending = False
             last_attempt_hash = None
-            readable_announced = False
             invalid_announced = False
             continue
 
-        if literal is not None and not readable_announced:
-            readable_announced = True
+        if literal is not None:
             invalid_announced = True
-            log(
-                "Chunk clipboard content is readable; "
-                "checking for a complete Weave workflow chunk..."
+            terminal_status(
+                "Clipboard content received — checking for a complete "
+                "Weave workflow chunk..."
             )
 
         if (
             invalid_announced
             and now - pending_last_activity >= invalid_grace_seconds
         ):
+            clear_terminal_status()
             log(
-                "The clipboard content did not resolve to a valid "
-                "Figma Weave workflow chunk."
+                "Clipboard content was not a complete Figma Weave "
+                "workflow chunk; ignored."
             )
-            log(f"Still waiting for chunk {chunk_count + 1}...")
+            log(
+                f"Waiting for chunk {chunk_count + 1}... "
+                f"[D] Done  [R] Rename  [X] Cancel"
+            )
             pending = False
             last_attempt_hash = None
-            readable_announced = False
             invalid_announced = False
 
 

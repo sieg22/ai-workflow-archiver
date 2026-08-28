@@ -6,7 +6,7 @@ cd "$SCRIPT_DIR" || exit 1
 
 echo
 echo "============================================================"
-echo " AI WORKFLOW ARCHIVER v1.5.3 - macOS"
+echo " AI WORKFLOW ARCHIVER v1.5.4 - macOS"
 echo "============================================================"
 echo
 echo "This launcher is optional."
