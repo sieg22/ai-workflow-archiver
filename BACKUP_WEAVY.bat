@@ -4,7 +4,7 @@ cd /d "%~dp0"
 
 echo.
 echo ============================================================
-echo  WEAVY WORKFLOW ARCHIVER v1.4.4
+echo  AI WORKFLOW ARCHIVER v1.5.0 - WINDOWS
 echo ============================================================
 echo.
 echo Project backup folders will be created directly in:
@@ -43,8 +43,6 @@ if not "%EXITCODE%"=="0" (
     echo  ARCHIVER STOPPED WITH AN ERROR
     echo ============================================================
     echo Exit code: %EXITCODE%
-    echo.
-    echo The window is staying open so you can read or copy the error.
     echo.
     pause
 )

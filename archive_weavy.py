@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-Weavy / Figma Weave Workflow Archiver v1.4.4
+Weavy / Figma Weave Workflow Archiver v1.5.0
 
-Interactive Windows workflow:
-  1. Double-click BACKUP_WEAVY.bat
+Interactive workflow (Windows and macOS):
+  1. Windows: double-click BACKUP_WEAVY.bat
+     macOS: double-click BACKUP_WEAVY.command
   2. Enter author once for the session (optional)
   3. Enter project name
-  4. The script clears the clipboard, then waits for the first valid Weavy workflow copy
-  5. In Weavy select the workflow and press Ctrl+C
+  4. The script clears the clipboard and waits for a new workflow copy
+  5. In Figma Weave select the workflow and press Ctrl+C (Windows) or Cmd+C (macOS)
   6. Archiving starts automatically — no paste into the terminal and no extra Enter
   7. The HTML report opens automatically
   8. Enter the next project name, or leave it blank to exit
@@ -53,8 +54,24 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VERSION = "1.4.4"
+VERSION = "1.5.0"
 DEFAULT_WORKERS = 4
+
+IS_WINDOWS = os.name == "nt"
+IS_MACOS = sys.platform == "darwin"
+
+
+def copy_shortcut() -> str:
+    return "Cmd+C" if IS_MACOS else "Ctrl+C"
+
+
+def platform_name() -> str:
+    if IS_MACOS:
+        return "macOS"
+    if IS_WINDOWS:
+        return "Windows"
+    return sys.platform
+
 
 
 # ---------------------------------------------------------------------------
@@ -155,16 +172,28 @@ def open_report(path: Path) -> None:
 
 def read_clipboard() -> str:
     """
-    Read clipboard silently.
+    Read clipboard silently on Windows or macOS.
 
-    IMPORTANT:
-    - clipboard contents are captured into memory only;
-    - the copied JSON/prompts are never printed to the terminal;
-    - errors never echo the full clipboard content.
+    Clipboard contents are captured into memory only and are never printed.
     """
 
-    # tkinter first because it does not invoke a shell and cannot echo clipboard
-    # text into the terminal.
+    # macOS native clipboard.
+    if IS_MACOS:
+        try:
+            cp = subprocess.run(
+                ["pbpaste"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=True,
+                timeout=30,
+            )
+            text = cp.stdout.decode("utf-8", errors="replace")
+            if text.strip():
+                return text
+        except Exception:
+            pass
+
+    # tkinter is a useful cross-platform fallback.
     try:
         import tkinter as tk
         root = tk.Tk()
@@ -176,8 +205,8 @@ def read_clipboard() -> str:
     except Exception:
         pass
 
-    # Windows PowerShell fallback, with stdout/stderr fully captured.
-    if os.name == "nt":
+    # Windows PowerShell fallback.
+    if IS_WINDOWS:
         for exe in ("powershell.exe", "pwsh.exe"):
             try:
                 kwargs = {}
@@ -204,7 +233,7 @@ def read_clipboard() -> str:
                 pass
 
     raise RuntimeError(
-        "Could not read the clipboard. Save the copied Weavy data to a .json/.txt "
+        "Could not read the clipboard. Save the copied workflow to a .json/.txt "
         "file and run the script with that file instead."
     )
 
@@ -243,16 +272,41 @@ def clipboard_hash(text: str | None) -> str:
 
 def clipboard_sequence_number() -> int | None:
     """
-    Windows clipboard sequence number changes on every clipboard update,
-    including copying identical content twice.
+    Return a native clipboard change counter when available.
+
+    Windows: GetClipboardSequenceNumber
+    macOS: NSPasteboard.changeCount via JXA/osascript
+
+    A native counter lets Multi-chunk mode notice a second copy event even when
+    the copied text is identical.
     """
-    if os.name != "nt":
-        return None
-    try:
-        import ctypes
-        return int(ctypes.windll.user32.GetClipboardSequenceNumber())
-    except Exception:
-        return None
+    if IS_WINDOWS:
+        try:
+            import ctypes
+            return int(ctypes.windll.user32.GetClipboardSequenceNumber())
+        except Exception:
+            return None
+
+    if IS_MACOS:
+        try:
+            js = (
+                'ObjC.import("AppKit");'
+                'var p=$.NSPasteboard.generalPasteboard;'
+                'p.changeCount.toString();'
+            )
+            cp = subprocess.run(
+                ["osascript", "-l", "JavaScript", "-e", js],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=True,
+                timeout=5,
+            )
+            value = cp.stdout.decode("utf-8", errors="replace").strip()
+            return int(value)
+        except Exception:
+            return None
+
+    return None
 
 
 def read_clipboard_safe() -> str | None:
@@ -263,7 +317,23 @@ def read_clipboard_safe() -> str | None:
 
 
 def clear_clipboard() -> None:
-    # tkinter first.
+    """Clear the text clipboard before waiting for a new workflow copy."""
+
+    if IS_MACOS:
+        try:
+            subprocess.run(
+                ["pbcopy"],
+                input=b"",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=True,
+                timeout=10,
+            )
+            return
+        except Exception:
+            pass
+
+    # tkinter fallback.
     try:
         import tkinter as tk
         root = tk.Tk()
@@ -275,8 +345,7 @@ def clear_clipboard() -> None:
     except Exception:
         pass
 
-    # Windows PowerShell fallback.
-    if os.name == "nt":
+    if IS_WINDOWS:
         for exe in ("powershell.exe", "pwsh.exe"):
             try:
                 kwargs = {}
@@ -299,28 +368,55 @@ def clear_clipboard() -> None:
 
 def read_hotkey() -> str | None:
     """
-    Read one key without requiring Enter while waiting for Ctrl+C.
-    Windows only; returns an uppercase character.
+    Read one key without requiring Enter while waiting for clipboard content.
+
+    Windows uses msvcrt.
+    macOS uses a short non-blocking cbreak read from the Terminal.
     """
-    if os.name != "nt":
-        return None
+    if IS_WINDOWS:
+        try:
+            import msvcrt
 
-    try:
-        import msvcrt
-        if not msvcrt.kbhit():
+            if not msvcrt.kbhit():
+                return None
+
+            ch = msvcrt.getwch()
+
+            if ch in ("\x00", "\xe0"):
+                if msvcrt.kbhit():
+                    msvcrt.getwch()
+                return None
+
+            return ch.upper()
+        except Exception:
             return None
 
-        ch = msvcrt.getwch()
+    if IS_MACOS:
+        try:
+            import select
+            import termios
+            import tty
 
-        # Consume extended-key second byte.
-        if ch in ("\x00", "\xe0"):
-            if msvcrt.kbhit():
-                msvcrt.getwch()
+            if not sys.stdin.isatty():
+                return None
+
+            fd = sys.stdin.fileno()
+            old_settings = termios.tcgetattr(fd)
+
+            try:
+                tty.setcbreak(fd)
+                ready, _, _ = select.select([sys.stdin], [], [], 0)
+                if not ready:
+                    return None
+                ch = sys.stdin.read(1)
+                return ch.upper() if ch else None
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+        except Exception:
             return None
 
-        return ch.upper()
-    except Exception:
-        return None
+    return None
 
 
 def wait_for_workflow_action() -> tuple[str, str | None, dict | None]:
@@ -339,7 +435,7 @@ def wait_for_workflow_action() -> tuple[str, str | None, dict | None]:
     log("")
     log("Clipboard cleared.")
     log("")
-    log("Now go to Weavy, select the workflow nodes, and press Ctrl+C.")
+    log(f"Now go to Figma Weave, select the workflow nodes, and press {copy_shortcut()}.")
     log("The script will AUTOMATICALLY detect the copied workflow from the clipboard.")
     log("")
     log("If the copied workflow is large, Weavy may take longer to prepare the clipboard,")
@@ -352,7 +448,7 @@ def wait_for_workflow_action() -> tuple[str, str | None, dict | None]:
     log("Do NOT paste anything into this window.")
     log("Do NOT press Enter after copying.")
     log("")
-    log("Waiting for Ctrl+C clipboard content...")
+    log(f"Waiting for {copy_shortcut()} clipboard content...")
 
     last_seq = clipboard_sequence_number()
     last_hash = clipboard_hash(read_clipboard_safe())
@@ -412,7 +508,7 @@ def wait_for_workflow_action() -> tuple[str, str | None, dict | None]:
             return "workflow", current, data
         except Exception:
             log("Clipboard content was received, but it is not a valid Weavy workflow.")
-            log("Still waiting for Ctrl+C...")
+            log(f"Still waiting for {copy_shortcut()}...")
 
 
 def _edge_key(edge: dict) -> tuple:
@@ -719,7 +815,7 @@ def collect_multi_chunk_workflow(
     log("Overlapping chunks are RECOMMENDED so cross-chunk connections are preserved.")
     log("Repeated nodes/edges/generations are automatically detected and merged.")
     log("")
-    log("After each Ctrl+C, the chunk is detected automatically — no Enter is required.")
+    log(f"After each {copy_shortcut()}, the chunk is detected automatically — no Enter is required.")
     log("")
     log("Hotkeys:")
     log("  [D] Done — finish collection and archive")
@@ -2549,8 +2645,8 @@ def interactive_loop(args) -> int:
     parent = Path(args.out).resolve()
     parent.mkdir(parents=True, exist_ok=True)
 
-    log("\nWEAVY LOCAL ARCHIVER")
-    log("====================\n")
+    log(f"\nWEAVY LOCAL ARCHIVER v{VERSION} — {platform_name()}")
+    log("========================================\n")
 
     # Author applies to all projects in this session.
     author = args.author

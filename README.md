@@ -1,46 +1,68 @@
-# Weavy / Figma Weave Workflow Archiver v1.4.4
+# AI Workflow Archiver v1.5.0
 
-A small Windows utility for backing up Weavy / Figma Weave workflows from the clipboard, including workflow structure, prompts, generation history, inputs, outputs, and local media copies.
+Local backup and migration utility for Figma Weave workflows.
 
-> Unofficial community utility. Not affiliated with or endorsed by Figma.
+> Unofficial community tool. Not affiliated with or endorsed by Figma.
+
+## What it saves
+
+- Workflow nodes and connections
+- Prompts and generation history
+- Input/reference media
+- Generated outputs
+- Local HTML report
+- Integrity metadata
+
+Media is downloaded locally so an archive can remain usable after the source account is no longer available.
 
 ## Requirements
 
-- Windows
 - Python 3.10+
-- Chrome/your browser with the workflow open
-
-No third-party Python packages are required.
+- Windows or macOS
+- No third-party Python packages
 
 ## Quick start
 
-1. Download or clone this repository.
-2. Double-click `BACKUP_WEAVY.bat`.
-3. Enter an optional author name.
-4. Enter a project name, for example `PROJECT_A`.
-5. The terminal will say it is waiting for clipboard content.
-6. In Weavy / Figma Weave, select the workflow nodes and press `Ctrl+C`.
-7. The script automatically detects the copied workflow. Do **not** paste into the terminal and do **not** press Enter again.
-8. When finished, the HTML report opens automatically.
+### Windows
 
-For large workflows, clipboard creation and parsing can take longer.
+1. Double-click `BACKUP_WEAVY.bat`.
+2. Enter an optional author name.
+3. Enter a project name.
+4. In Figma Weave, select the workflow nodes and press `Ctrl+C`.
+5. The script detects the clipboard automatically. Do not paste into the terminal.
+6. The archive is created and the HTML report opens.
+
+### macOS
+
+1. Double-click `BACKUP_WEAVY.command`.
+2. Enter an optional author name.
+3. Enter a project name.
+4. In Figma Weave, select the workflow nodes and press `Cmd+C`.
+5. The script detects the clipboard automatically. Do not paste into Terminal.
+6. The archive is created and the HTML report opens.
+
+If macOS refuses to launch the `.command` file, run once in Terminal:
+
+```bash
+chmod +x BACKUP_WEAVY.command
+```
+
+Then open it again.
 
 ## Shortcuts while waiting
 
-- `R` — rename the project
-- `M` — enter Multi-chunk mode
+- `R` — rename project
+- `M` — Multi-chunk mode
 
-Multi-chunk mode is useful when a large page cannot be copied at once. Copy several **overlapping** selections; duplicates are automatically merged.
+Multi-chunk mode is useful for very large pages. Copy several **overlapping** selections; duplicate nodes, edges, and generations are merged automatically.
 
-In Multi-chunk mode:
+Multi-chunk shortcuts:
 
 - `D` — finish and archive
 - `R` — rename
 - `X` — cancel
 
 ## Output
-
-Each project is saved beside the script:
 
 ```text
 PROJECT_A/
@@ -57,23 +79,22 @@ PROJECT_A/
 └── PROJECT_A_report.html
 ```
 
-Generated outputs are grouped by date and type, for example:
+Generated outputs are grouped by date and type:
 
 ```text
-media/output/
-└── YYYY-MM-DD/
-    ├── video/
-    ├── image/
-    ├── upscale/
-    ├── audio/
-    └── other/
+media/output/YYYY-MM-DD/
+├── video/
+├── image/
+├── upscale/
+├── audio/
+└── other/
 ```
 
-## HTML report
+## Report
 
-The report includes:
+The HTML report includes:
 
-- Overview and archive status
+- Archive status
 - Generated outputs with newest/oldest sorting
 - Canvas reconstruction
 - Output timeline
@@ -81,36 +102,26 @@ The report includes:
 - Prompt history
 - Models
 
-Media is local-first. If a local file is missing, the report can fall back to the original remote URL while it still exists.
+Do not remove the source account until the report shows the archive is fully self-contained.
 
-Do not close/delete the source account until the report shows the archive is fully self-contained.
+## Privacy
 
-## Git / privacy
+Generated project folders may contain prompts, media, URLs, and workflow metadata.
 
-Commit only the tool source files. Do not commit generated project backups, media, prompts, or metadata.
+Do not commit project backup folders to a public repository.
 
-The included `.gitignore` excludes common generated archive content.
+## Repository files
 
-## Optional CLI
+Commit only:
 
-Single file:
-
-```bat
-python archive_weavy.py workflow.json --name "PROJECT_A"
-```
-
-Custom output folder:
-
-```bat
-python archive_weavy.py --interactive --out "C:\PATH\TO\BACKUPS"
-```
-
-Create an additional ZIP:
-
-```bat
-python archive_weavy.py --interactive --zip
+```text
+archive_weavy.py
+BACKUP_WEAVY.bat
+BACKUP_WEAVY.command
+README.md
+.gitignore
 ```
 
 ## License
 
-No license file is included. Add the license that is appropriate for your repository before publishing as open source.
+No license file is included. Add an open-source license appropriate for your repository before publishing.
