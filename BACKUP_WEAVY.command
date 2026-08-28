@@ -6,8 +6,14 @@ cd "$SCRIPT_DIR" || exit 1
 
 echo
 echo "============================================================"
-echo " AI WORKFLOW ARCHIVER v1.5.0 - macOS"
+echo " AI WORKFLOW ARCHIVER v1.5.1 - macOS"
 echo "============================================================"
+echo
+echo "This launcher is optional."
+echo "If macOS blocks it because it was downloaded from the Internet,"
+echo "use the recommended Terminal command instead:"
+echo
+echo "  python3 archive_weavy.py --interactive"
 echo
 echo "Project backup folders will be created directly in:"
 echo "$SCRIPT_DIR"

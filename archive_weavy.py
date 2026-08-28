@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Weavy / Figma Weave Workflow Archiver v1.5.0
+Weavy / Figma Weave Workflow Archiver v1.5.1
 
 Interactive workflow (Windows and macOS):
   1. Windows: double-click BACKUP_WEAVY.bat
@@ -54,7 +54,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VERSION = "1.5.0"
+VERSION = "1.5.1"
 DEFAULT_WORKERS = 4
 
 IS_WINDOWS = os.name == "nt"
