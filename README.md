@@ -72,20 +72,6 @@ Update mode rebuilds the report and metadata in the same folder. Existing media 
 
 Only obsolete media files recorded in the previous `asset_manifest.json` are removed. Untracked user files are never deleted.
 
-## Task labels
-
-Overview shows real workflow tasks only. Components with:
-
-```text
-0 run(s) · 0 model node(s)
-```
-
-are omitted from Overview, while their nodes remain available in Canvas, Inputs, and Prompts.
-
-Task names are generated from generic workflow metadata such as operation type, model information, and input/reference filenames. The tool does not use project-specific hardcoded prompt keywords.
-
-Task labels are for report organization only. They do not affect workflow analysis, generation deduplication, media downloads, Canvas reconstruction, or archive integrity.
-
 ## Output structure
 
 ```text
