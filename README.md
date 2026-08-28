@@ -1,4 +1,4 @@
-# AI Workflow Archiver v1.5.1
+# AI Workflow Archiver v1.5.2
 
 A local backup and migration utility for Figma Weave workflows.
 
@@ -13,8 +13,6 @@ A local backup and migration utility for Figma Weave workflows.
 - Local HTML report
 - Integrity metadata
 
-The goal is to preserve a workflow locally so it can remain usable even after the source account is no longer available.
-
 ## Requirements
 
 - Python 3.10+
@@ -24,49 +22,27 @@ The goal is to preserve a workflow locally so it can remain usable even after th
 ## Windows
 
 1. Double-click `BACKUP_WEAVY.bat`.
-2. Enter an optional author name.
-3. Enter a project name.
-4. In Figma Weave, select the workflow nodes and press `Ctrl+C`.
-5. The script detects the clipboard automatically.
-6. Do not paste the workflow into the terminal.
-7. The archive is created and the HTML report opens automatically.
+2. Enter an optional author name and a project name.
+3. In Figma Weave, select the workflow nodes and press `Ctrl+C`.
+4. The script detects the clipboard automatically.
+5. Do not paste the workflow into the terminal.
+6. The archive is created and the HTML report opens automatically.
 
 ## macOS
 
-### Recommended method
-
-Open Terminal in the project folder and run:
+Recommended method:
 
 ```bash
 python3 archive_weavy.py --interactive
 ```
 
-Then:
+Then enter an optional author name and project name, select the workflow in Figma Weave, and press `Cmd+C`.
 
-1. Enter an optional author name.
-2. Enter a project name.
-3. In Figma Weave, select the workflow nodes and press `Cmd+C`.
-4. The script detects the clipboard automatically.
-5. Do not paste the workflow into Terminal.
-6. The archive is created and the HTML report opens automatically.
-
-### Optional launcher
-
-`BACKUP_WEAVY.command` is included as a convenience launcher.
-
-macOS may block downloaded `.command` files with Gatekeeper because the file is not Apple-signed or notarized.
-
-If that happens, either use the recommended Terminal command above, or allow the launcher manually in:
+`BACKUP_WEAVY.command` is also included as an optional convenience launcher. macOS Gatekeeper may block downloaded `.command` files because they are not Apple-signed or notarized. If that happens, use the Terminal command above, or allow the launcher once in:
 
 `System Settings → Privacy & Security → Open Anyway`
 
 Do not disable Gatekeeper system-wide.
-
-If the launcher only lacks executable permission, run:
-
-```bash
-chmod +x BACKUP_WEAVY.command
-```
 
 ## Shortcuts while waiting
 
@@ -75,17 +51,40 @@ chmod +x BACKUP_WEAVY.command
 
 ## Multi-chunk mode
 
-Use Multi-chunk mode for very large workflows that are difficult to copy in one selection.
+Use Multi-chunk mode for very large workflows. Copy several overlapping selections; duplicate nodes, edges, and generations are detected and merged automatically.
 
-Copy several overlapping areas of the same workflow. Duplicate nodes, edges, and generations are detected and merged automatically.
-
-Shortcuts:
-
-- `D` — finish collection and create the archive
-- `R` — rename the project
-- `X` — cancel the current project
+- `D` — finish and create the archive
+- `R` — rename
+- `X` — cancel
 
 Overlapping chunks are recommended because they help preserve cross-chunk connections.
+
+## Updating an existing archive
+
+If a folder with the same project name already exists, the script asks what to do **after the new workflow has been copied and parsed**:
+
+- `U` — update the existing archive
+- `N` — create a new numbered copy such as `PROJECT_A_2`
+- `R` — rename the project without copying the workflow again
+- `C` — cancel
+
+Update mode rebuilds the report and metadata in the same folder. Existing media is reused by URL whenever possible. If a deterministic filename changed, the local file is moved to the new path rather than downloaded again.
+
+Only obsolete media files recorded in the previous `asset_manifest.json` are removed. Untracked user files are never deleted.
+
+## Task labels
+
+Overview shows real workflow tasks only. Components with:
+
+```text
+0 run(s) · 0 model node(s)
+```
+
+are omitted from Overview, while their nodes remain available in Canvas, Inputs, and Prompts.
+
+Task names are generated from generic workflow metadata such as operation type, model information, and input/reference filenames. The tool does not use project-specific hardcoded prompt keywords.
+
+Task labels are for report organization only. They do not affect workflow analysis, generation deduplication, media downloads, Canvas reconstruction, or archive integrity.
 
 ## Output structure
 
@@ -115,25 +114,9 @@ media/output/YYYY-MM-DD/
 └── other/
 ```
 
-## HTML report
-
-The report includes:
-
-- Archive status
-- Generated outputs with newest/oldest sorting
-- Canvas reconstruction
-- Output timeline
-- Inputs
-- Prompt history
-- Models
-
-Do not remove the source account until the report shows that the archive is fully self-contained.
-
 ## Privacy
 
-Generated project folders may contain private prompts, media, URLs, and workflow metadata.
-
-Do not commit generated backup folders to a public repository.
+Generated project folders may contain private prompts, media, URLs, and workflow metadata. Do not commit generated backup folders to a public repository.
 
 ## Files to publish on GitHub
 
@@ -144,8 +127,6 @@ BACKUP_WEAVY.command
 README.md
 .gitignore
 ```
-
-Do not publish generated project archives, media, metadata, test files, or local logs.
 
 ## License
 

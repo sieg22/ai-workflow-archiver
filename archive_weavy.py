@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Weavy / Figma Weave Workflow Archiver v1.5.1
+Weavy / Figma Weave Workflow Archiver v1.5.2
 
 Interactive workflow (Windows and macOS):
   1. Windows: double-click BACKUP_WEAVY.bat
@@ -40,6 +40,7 @@ import html
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -54,7 +55,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VERSION = "1.5.1"
+VERSION = "1.5.2"
 DEFAULT_WORKERS = 4
 
 IS_WINDOWS = os.name == "nt"
@@ -1080,13 +1081,32 @@ class Archive:
 
             self.components.append(comp)
 
+        # Give every connected component a useful generic label.
+        # Duplicate labels receive a numeric suffix so the report remains clear.
+        label_counts: dict[str, int] = defaultdict(int)
+
         for index, comp in enumerate(self.components, 1):
-            self.branch_names[index] = self.infer_branch_name(comp)
+            base_name = self.infer_branch_name(comp)
+            label_counts[base_name] += 1
+            occurrence = label_counts[base_name]
+
+            self.branch_names[index] = (
+                base_name
+                if occurrence == 1
+                else f"{base_name} ({occurrence})"
+            )
+
             for nid in comp:
                 self.branch_by_node[nid] = index
 
     def infer_branch_name(self, comp: list[str]) -> str:
-        """Infer a generic human-readable task label without project-specific rules."""
+        """
+        Infer a human-readable task label using generic workflow metadata only.
+
+        This intentionally does not contain project-specific prompt keywords.
+        Task labels are presentation metadata; they do not affect generation
+        deduplication, downloading, Canvas reconstruction, or integrity checks.
+        """
         models: list[str] = []
         media_names: list[str] = []
         output_types: set[str] = set()
@@ -1097,17 +1117,19 @@ class Archive:
 
             f = self.import_file(node)
             if f:
-                name = str(f.get("name") or "")
+                name = str(f.get("name") or "").strip()
                 if name:
                     media_names.append(name)
 
             if node.get("isModel"):
                 model_name = self.model_name(node)
-                models.append(model_name)
+                if model_name:
+                    models.append(model_name)
 
                 model_text = (
                     model_name + " " + self.model_id(node)
                 ).lower()
+
                 if "upscale" in model_text or "magnific" in model_text:
                     has_upscale = True
 
@@ -1117,20 +1139,48 @@ class Archive:
                     if output_type:
                         output_types.add(output_type)
 
-        if has_upscale:
-            return "Image upscale"
-        if "video" in output_types:
-            return "Video generation"
-        if "image" in output_types:
-            return "Image generation"
-        if "audio" in output_types:
-            return "Audio generation"
-        if models:
-            return models[0] + " workflow"
-        if media_names:
-            return "Media workflow — " + short_text(media_names[0], 40)
+        # Prefer an input/reference filename as the task context because it
+        # distinguishes parallel branches without attempting semantic AI
+        # interpretation of private prompt text.
+        context = ""
 
-        return "Workflow branch"
+        if media_names:
+            stems = []
+            for name in media_names:
+                stem = Path(name).stem.strip() or name.strip()
+                if stem and stem not in stems:
+                    stems.append(stem)
+
+            if stems:
+                context = short_text(stems[0], 34)
+                if len(stems) > 1:
+                    context += f" +{len(stems) - 1}"
+
+        if not context and models:
+            context = short_text(models[0], 42)
+
+        if has_upscale:
+            action = "Image upscale"
+        elif "video" in output_types:
+            action = "Video generation"
+        elif "image" in output_types:
+            action = "Image generation"
+        elif "audio" in output_types:
+            action = "Audio generation"
+        elif models:
+            action = short_text(models[0], 46) + " workflow"
+            context = (
+                context
+                if context and context != short_text(models[0], 42)
+                else ""
+            )
+        elif media_names:
+            action = "Media workflow"
+        else:
+            action = "Workflow branch"
+
+        return f"{action} — {context}" if context else action
+
 
     # ------------------------------ media ---------------------------------
 
@@ -1789,6 +1839,11 @@ class Archive:
                 1 for nid in comp
                 if self.node_by_id[nid].get("isModel")
             )
+
+            # Pure prompt/import/utility components are useful on Canvas,
+            # Inputs and Prompts, but are not workflow tasks for Overview.
+            if runs == 0 and models == 0:
+                continue
 
             branch_cards.append(
                 f'<div class="branch">'
@@ -2491,6 +2546,209 @@ function resetCanvas(){{
         return zip_path
 
 
+
+def exact_project_root(parent: Path, project_name: str) -> Path:
+    return parent / sanitize_filename(project_name, 90)
+
+
+def load_existing_asset_manifest(root: Path) -> list[dict]:
+    path = root / "metadata" / "asset_manifest.json"
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return [x for x in data if isinstance(x, dict)]
+    except Exception:
+        pass
+
+    return []
+
+
+def managed_media_path(root: Path, relative_path: str | None) -> Path | None:
+    """
+    Convert a manifest media path into a safe path under this archive root.
+
+    Only files below media/ are eligible for migration/removal.
+    """
+    if not relative_path:
+        return None
+
+    rel = Path(str(relative_path).replace("\\\\", "/"))
+
+    if rel.is_absolute() or ".." in rel.parts:
+        return None
+
+    if not rel.parts or rel.parts[0].lower() != "media":
+        return None
+
+    return root.joinpath(*rel.parts)
+
+
+def remove_empty_media_dirs(root: Path) -> None:
+    media_root = root / "media"
+
+    if not media_root.exists():
+        return
+
+    dirs = sorted(
+        [p for p in media_root.rglob("*") if p.is_dir()],
+        key=lambda p: len(p.parts),
+        reverse=True,
+    )
+
+    for directory in dirs:
+        try:
+            directory.rmdir()
+        except OSError:
+            pass
+
+
+def reconcile_existing_media(
+    root: Path,
+    old_assets: list[dict],
+    new_assets: list[dict],
+) -> dict:
+    """
+    Reuse media from an existing archive update.
+
+    Matching is primarily by remote URL. If a filename/path changed because
+    report task labels changed, the existing local file is moved to the new
+    deterministic location instead of being downloaded again.
+
+    Only files listed in the previous asset_manifest.json are considered
+    managed and eligible for cleanup. Untracked user files are never removed.
+    """
+    old_by_url = {
+        str(a.get("url")): a
+        for a in old_assets
+        if a.get("url")
+    }
+    new_by_url = {
+        str(a.get("url")): a
+        for a in new_assets
+        if a.get("url")
+    }
+
+    migrated = 0
+    reused = 0
+    removed = 0
+
+    # Reuse/migrate assets still referenced by the new workflow.
+    for url, new_asset in new_by_url.items():
+        old_asset = old_by_url.get(url)
+        if not old_asset:
+            continue
+
+        old_path = managed_media_path(root, old_asset.get("local_path"))
+        new_path = managed_media_path(root, new_asset.get("local_path"))
+
+        if not old_path or not new_path or not old_path.exists():
+            continue
+
+        if old_path == new_path:
+            reused += 1
+            continue
+
+        new_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if new_path.exists() and new_path.stat().st_size > 0:
+            # The desired destination is already valid; remove only the old
+            # manifest-managed duplicate.
+            try:
+                old_path.unlink()
+                removed += 1
+            except OSError:
+                pass
+            reused += 1
+            continue
+
+        try:
+            shutil.move(str(old_path), str(new_path))
+            migrated += 1
+        except OSError:
+            pass
+
+    # Remove assets that were managed by the old archive but are no longer
+    # referenced by the new workflow.
+    new_urls = set(new_by_url)
+
+    for url, old_asset in old_by_url.items():
+        if url in new_urls:
+            continue
+
+        old_path = managed_media_path(root, old_asset.get("local_path"))
+
+        if old_path and old_path.exists() and old_path.is_file():
+            try:
+                old_path.unlink()
+                removed += 1
+            except OSError:
+                pass
+
+    remove_empty_media_dirs(root)
+
+    return {
+        "reused": reused,
+        "migrated": migrated,
+        "removed": removed,
+    }
+
+
+def choose_existing_archive_action(
+    parent: Path,
+    project_name: str,
+) -> tuple[str, str]:
+    """
+    Resolve an existing same-name archive after workflow capture.
+
+    Returns:
+      ("new", project_name)
+      ("update", project_name)
+      ("cancel", project_name)
+
+    Rename loops here and does not require copying the workflow again.
+    """
+    while True:
+        exact = exact_project_root(parent, project_name)
+
+        if not exact.exists():
+            return "new", project_name
+
+        next_copy = choose_root(parent, project_name)
+
+        log("")
+        log("An archive with this project name already exists:")
+        log(f"  {exact}")
+        log("")
+        log("Choose how to continue:")
+        log("  [U] Update existing archive")
+        log(f"  [N] Create a new copy: {next_copy.name}")
+        log("  [R] Rename project")
+        log("  [C] Cancel")
+        log("")
+        choice = input("Choice [U/N/R/C]: ").strip().upper()
+
+        if choice == "U":
+            return "update", project_name
+
+        if choice == "N":
+            return "new", project_name
+
+        if choice == "R":
+            new_name = input(
+                f"Project name [{project_name}]: "
+            ).strip()
+            if new_name:
+                project_name = new_name
+            continue
+
+        if choice == "C":
+            return "cancel", project_name
+
+        log("Please enter U, N, R, or C.")
+
+
+
 # ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
@@ -2522,10 +2780,17 @@ def archive_project(
     full_data: bool,
     make_zip: bool,
     auto_open: bool,
+    root_mode: str = "new",
 ) -> tuple[Path, Path | None]:
 
-    root = choose_root(parent, project_name)
-    root.mkdir(parents=True)
+    if root_mode == "update":
+        root = exact_project_root(parent, project_name)
+        old_assets = load_existing_asset_manifest(root)
+        root.mkdir(parents=True, exist_ok=True)
+    else:
+        root = choose_root(parent, project_name)
+        old_assets = []
+        root.mkdir(parents=True)
 
     arc = Archive(
         data=data,
@@ -2554,6 +2819,19 @@ def archive_project(
     arc.collect_generations()
     arc.build_assets()
     arc.build_models()
+
+    if root_mode == "update":
+        update_stats = reconcile_existing_media(
+            root,
+            old_assets,
+            arc.assets,
+        )
+        log(
+            "  Existing archive update: "
+            f"{update_stats['reused']} media reused · "
+            f"{update_stats['migrated']} moved to new paths · "
+            f"{update_stats['removed']} obsolete managed files removed"
+        )
 
     normalized = arc.normalized()
 
@@ -2695,6 +2973,14 @@ def interactive_loop(args) -> int:
                     action = multi_action
 
                 if action == "workflow" and literal and data:
+                    root_mode, project_name = choose_existing_archive_action(
+                        parent,
+                        project_name,
+                    )
+
+                    if root_mode == "cancel":
+                        break
+
                     archive_project(
                         literal=literal,
                         data=data,
@@ -2706,6 +2992,7 @@ def interactive_loop(args) -> int:
                         full_data=args.full_data,
                         make_zip=args.zip,
                         auto_open=not args.no_open,
+                        root_mode=root_mode,
                     )
                     break
 
@@ -2784,6 +3071,11 @@ def main() -> int:
         action="store_true",
         help="Do not automatically open the HTML report.",
     )
+    parser.add_argument(
+        "--update-existing",
+        action="store_true",
+        help="Update the exact same-name archive folder instead of creating _2.",
+    )
 
     args = parser.parse_args()
     args.workers = max(1, args.workers)
@@ -2827,6 +3119,7 @@ def main() -> int:
             full_data=args.full_data,
             make_zip=args.zip,
             auto_open=not args.no_open,
+            root_mode="update" if args.update_existing else "new",
         )
 
         return 0
