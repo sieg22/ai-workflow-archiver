@@ -1,4 +1,4 @@
-# AI Workflow Archiver v1.5.2
+# AI Workflow Archiver v1.5.3
 
 A local backup and migration utility for Figma Weave workflows.
 
@@ -49,6 +49,24 @@ Do not disable Gatekeeper system-wide.
 - `R` — rename the project
 - `M` — enter Multi-chunk mode
 
+## Clipboard detection
+
+After `Ctrl+C` or `Cmd+C`, the script now keeps the clipboard event pending until the copied workflow can actually be read.
+
+For large workflows you may see:
+
+```text
+Clipboard activity detected.
+Waiting for Figma Weave to finish preparing the copied workflow...
+Workflow received.
+```
+
+`Clipboard activity detected` means the operating system has registered the copy action.
+
+`Workflow received` means the complete workflow payload has been read successfully.
+
+Large workflows may still take longer for Figma Weave to prepare and for the script to parse, but a temporarily locked or delayed clipboard should no longer cause the copy event to be silently missed.
+
 ## Multi-chunk mode
 
 Use Multi-chunk mode for very large workflows. Copy several overlapping selections; duplicate nodes, edges, and generations are detected and merged automatically.
@@ -59,9 +77,11 @@ Use Multi-chunk mode for very large workflows. Copy several overlapping selectio
 
 Overlapping chunks are recommended because they help preserve cross-chunk connections.
 
+The same delayed-clipboard retry logic is used for every chunk.
+
 ## Updating an existing archive
 
-If a folder with the same project name already exists, the script asks what to do **after the new workflow has been copied and parsed**:
+If a folder with the same project name already exists, the script asks what to do after the new workflow has been copied and parsed:
 
 - `U` — update the existing archive
 - `N` — create a new numbered copy such as `PROJECT_A_2`

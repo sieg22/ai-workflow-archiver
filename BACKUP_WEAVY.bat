@@ -4,7 +4,7 @@ cd /d "%~dp0"
 
 echo.
 echo ============================================================
-echo  AI WORKFLOW ARCHIVER v1.5.2 - WINDOWS
+echo  AI WORKFLOW ARCHIVER v1.5.3 - WINDOWS
 echo ============================================================
 echo.
 echo Project backup folders will be created directly in:

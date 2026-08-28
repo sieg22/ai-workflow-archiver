@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Weavy / Figma Weave Workflow Archiver v1.5.2
+Weavy / Figma Weave Workflow Archiver v1.5.3
 
 Interactive workflow (Windows and macOS):
   1. Windows: double-click BACKUP_WEAVY.bat
@@ -55,7 +55,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VERSION = "1.5.2"
+VERSION = "1.5.3"
 DEFAULT_WORKERS = 4
 
 IS_WINDOWS = os.name == "nt"
@@ -420,6 +420,76 @@ def read_hotkey() -> str | None:
     return None
 
 
+
+def poll_clipboard_activity(
+    last_seq: int | None,
+    last_hash: str,
+) -> tuple[bool, int | None, str, str | None]:
+    """
+    Detect clipboard activity without consuming the event.
+
+    Native clipboard sequence counters are preferred because they can detect
+    repeated copies of identical content. When unavailable, a content hash is
+    used as a fallback.
+    """
+    seq = clipboard_sequence_number()
+    current = None
+    changed = False
+
+    if seq is not None and last_seq is not None:
+        if seq != last_seq:
+            last_seq = seq
+            changed = True
+    else:
+        current = read_clipboard_safe()
+        current_hash = clipboard_hash(current)
+
+        if current_hash != last_hash:
+            last_hash = current_hash
+            changed = True
+
+    return changed, last_seq, last_hash, current
+
+
+def pending_clipboard_read(
+    current: str | None,
+    last_attempt_hash: str | None,
+) -> tuple[str | None, str | None, dict | None]:
+    """
+    Try to read and parse a pending clipboard copy.
+
+    Returns:
+      (None, last_attempt_hash, None)
+        Clipboard is still unavailable/empty, or the exact same invalid
+        snapshot was already tried.
+
+      (literal, new_hash, data)
+        A complete valid Weave workflow/chunk is available.
+
+      (literal, new_hash, None)
+        Non-empty clipboard text was readable but is not yet a valid Weave
+        payload. The caller should keep the event pending briefly instead of
+        discarding the copy event immediately.
+    """
+    if current is None:
+        current = read_clipboard_safe()
+
+    if not current or not current.strip():
+        return None, last_attempt_hash, None
+
+    current_hash = clipboard_hash(current)
+
+    # Avoid repeatedly parsing the same invalid/incomplete large payload.
+    if current_hash == last_attempt_hash:
+        return None, last_attempt_hash, None
+
+    try:
+        data = parse_source_text(current)
+        return current, current_hash, data
+    except Exception:
+        return current, current_hash, None
+
+
 def wait_for_workflow_action() -> tuple[str, str | None, dict | None]:
     """
     Normal waiting mode.
@@ -429,18 +499,33 @@ def wait_for_workflow_action() -> tuple[str, str | None, dict | None]:
       ("rename", None, None)
       ("multi", None, None)
 
-    While waiting, R and M are single-key hotkeys; Enter is not required.
+    Clipboard reliability:
+    Once clipboard activity is detected, the event remains pending until the
+    copied content can actually be read. This avoids losing a large Weave copy
+    when the OS reports a clipboard change before Weave has finished rendering
+    the clipboard payload.
     """
     clear_clipboard()
 
     log("")
     log("Clipboard cleared.")
     log("")
-    log(f"Now go to Figma Weave, select the workflow nodes, and press {copy_shortcut()}.")
-    log("The script will AUTOMATICALLY detect the copied workflow from the clipboard.")
+    log(
+        f"Now go to Figma Weave, select the workflow nodes, "
+        f"and press {copy_shortcut()}."
+    )
+    log(
+        "The script will AUTOMATICALLY detect the copied workflow "
+        "from the clipboard."
+    )
     log("")
-    log("If the copied workflow is large, Weavy may take longer to prepare the clipboard,")
-    log("and parsing may also take longer after the content is received.")
+    log(
+        "If the copied workflow is large, Weave may take longer "
+        "to prepare the clipboard,"
+    )
+    log(
+        "and parsing may also take longer after the content is received."
+    )
     log("")
     log("While waiting:")
     log("  [R] Rename project")
@@ -453,6 +538,17 @@ def wait_for_workflow_action() -> tuple[str, str | None, dict | None]:
 
     last_seq = clipboard_sequence_number()
     last_hash = clipboard_hash(read_clipboard_safe())
+
+    pending = False
+    pending_started = 0.0
+    pending_last_activity = 0.0
+    last_attempt_hash = None
+    received_announced = False
+    invalid_announced = False
+
+    # If readable clipboard text remains invalid and no additional clipboard
+    # activity occurs, return to idle waiting after this grace period.
+    invalid_grace_seconds = 2.5
 
     while True:
         hotkey = read_hotkey()
@@ -467,49 +563,80 @@ def wait_for_workflow_action() -> tuple[str, str | None, dict | None]:
             log("Entering Multi-chunk mode...")
             return "multi", None, None
 
-        time.sleep(0.20)
+        time.sleep(0.15)
 
-        seq = clipboard_sequence_number()
-        current = None
-        changed = False
+        changed, last_seq, last_hash, current = poll_clipboard_activity(
+            last_seq,
+            last_hash,
+        )
 
-        if seq is not None and last_seq is not None:
-            if seq != last_seq:
-                last_seq = seq
-                changed = True
-        else:
-            current = read_clipboard_safe()
-            current_hash = clipboard_hash(current)
-            if current_hash != last_hash:
-                last_hash = current_hash
-                changed = True
+        now = time.monotonic()
 
-        if not changed:
+        if changed:
+            pending = True
+            pending_started = now
+            pending_last_activity = now
+            last_attempt_hash = None
+            received_announced = False
+            invalid_announced = False
+
+            log("")
+            log("Clipboard activity detected.")
+            log(
+                "Waiting for Figma Weave to finish preparing "
+                "the copied workflow..."
+            )
+
+        if not pending:
             continue
 
-        if current is None:
-            current = read_clipboard_safe()
+        literal, attempted_hash, data = pending_clipboard_read(
+            current,
+            last_attempt_hash,
+        )
 
-        if not current or not current.strip():
-            continue
+        if attempted_hash is not None:
+            last_attempt_hash = attempted_hash
 
-        # Important UX: acknowledge receipt BEFORE JSON parsing.
-        log("")
-        log("Clipboard content received.")
-        log("Validating and parsing the Weavy workflow...")
-        log("Large workflows can take noticeably longer here. Please keep this window open.")
+        if data is not None and literal is not None:
+            if not received_announced:
+                log("Workflow received.")
+                received_announced = True
 
-        try:
-            data = parse_source_text(current)
+            log("Validating and parsing the Weave workflow...")
+            log(
+                "Large workflows can take noticeably longer here. "
+                "Please keep this window open."
+            )
             log(
                 f"Workflow parsed: {len(data.get('nodes', []))} nodes, "
                 f"{len(data.get('edges', []))} edges."
             )
             log("Starting archive...")
-            return "workflow", current, data
-        except Exception:
-            log("Clipboard content was received, but it is not a valid Weavy workflow.")
+            return "workflow", literal, data
+
+        if literal is not None and not invalid_announced:
+            # We received readable text but it may be an intermediate clipboard
+            # snapshot or unrelated clipboard content. Keep retrying briefly.
+            invalid_announced = True
+            log("Clipboard content is readable; checking for a complete Weave workflow...")
+
+        # If another clipboard change occurs, changed=True above resets the
+        # timer and parsing hash. This lets delayed rendering finish naturally.
+        if (
+            invalid_announced
+            and now - pending_last_activity >= invalid_grace_seconds
+        ):
+            log(
+                "The clipboard content did not resolve to a valid "
+                "Figma Weave workflow."
+            )
             log(f"Still waiting for {copy_shortcut()}...")
+            pending = False
+            last_attempt_hash = None
+            received_announced = False
+            invalid_announced = False
+
 
 
 def _edge_key(edge: dict) -> tuple:
@@ -794,17 +921,11 @@ def collect_multi_chunk_workflow(
     project_name: str,
 ) -> tuple[str, str | None, dict | None]:
     """
-    Collect multiple overlapping Weavy clipboard selections.
+    Collect multiple overlapping Weave clipboard selections.
 
-    Returns:
-      ("workflow", literal_json, merged_data)
-      ("rename", None, None)
-      ("cancel", None, None)
-
-    Hotkeys:
-      D = done and archive
-      R = rename project (collected chunks are discarded)
-      X = cancel project
+    The same pending clipboard state used by normal mode is applied here, so a
+    chunk is not lost if the clipboard change event arrives before the large
+    chunk text is actually readable.
     """
     clear_clipboard()
 
@@ -813,10 +934,19 @@ def collect_multi_chunk_workflow(
     log("================")
     log("")
     log("Copy the large project in several overlapping selections.")
-    log("Overlapping chunks are RECOMMENDED so cross-chunk connections are preserved.")
-    log("Repeated nodes/edges/generations are automatically detected and merged.")
+    log(
+        "Overlapping chunks are RECOMMENDED so cross-chunk "
+        "connections are preserved."
+    )
+    log(
+        "Repeated nodes/edges/generations are automatically "
+        "detected and merged."
+    )
     log("")
-    log(f"After each {copy_shortcut()}, the chunk is detected automatically — no Enter is required.")
+    log(
+        f"After each {copy_shortcut()}, the chunk is detected "
+        "automatically — no Enter is required."
+    )
     log("")
     log("Hotkeys:")
     log("  [D] Done — finish collection and archive")
@@ -830,12 +960,22 @@ def collect_multi_chunk_workflow(
     last_seq = clipboard_sequence_number()
     last_hash = clipboard_hash(read_clipboard_safe())
 
+    pending = False
+    pending_last_activity = 0.0
+    last_attempt_hash = None
+    readable_announced = False
+    invalid_announced = False
+    invalid_grace_seconds = 2.5
+
     while True:
         hotkey = read_hotkey()
 
         if hotkey == "R":
             log("")
-            log("Returning to project name. Collected chunks will be discarded.")
+            log(
+                "Returning to project name. "
+                "Collected chunks will be discarded."
+            )
             return "rename", None, None
 
         if hotkey == "X":
@@ -856,11 +996,13 @@ def collect_multi_chunk_workflow(
                 f"{len(merged.get('nodes', []))} nodes, "
                 f"{len(merged.get('edges', []))} edges."
             )
+
             if recovered:
                 log(
                     f"Recovered {recovered} additional connection(s) "
                     f"from embedded model input references."
                 )
+
             log("Starting archive...")
 
             literal = json.dumps(
@@ -870,72 +1012,99 @@ def collect_multi_chunk_workflow(
             )
             return "workflow", literal, merged
 
-        time.sleep(0.20)
+        time.sleep(0.15)
 
-        seq = clipboard_sequence_number()
-        current = None
-        changed = False
+        changed, last_seq, last_hash, current = poll_clipboard_activity(
+            last_seq,
+            last_hash,
+        )
 
-        if seq is not None and last_seq is not None:
-            if seq != last_seq:
-                last_seq = seq
-                changed = True
-        else:
-            current = read_clipboard_safe()
-            current_hash = clipboard_hash(current)
-            if current_hash != last_hash:
-                last_hash = current_hash
-                changed = True
+        now = time.monotonic()
 
-        if not changed:
+        if changed:
+            pending = True
+            pending_last_activity = now
+            last_attempt_hash = None
+            readable_announced = False
+            invalid_announced = False
+
+            log("")
+            log(f"Clipboard activity detected for chunk {chunk_count + 1}.")
+            log(
+                "Waiting for Figma Weave to finish preparing "
+                "the copied chunk..."
+            )
+
+        if not pending:
             continue
 
-        if current is None:
-            current = read_clipboard_safe()
+        literal, attempted_hash, chunk = pending_clipboard_read(
+            current,
+            last_attempt_hash,
+        )
 
-        if not current or not current.strip():
+        if attempted_hash is not None:
+            last_attempt_hash = attempted_hash
+
+        if chunk is not None and literal is not None:
+            log(f"Chunk {chunk_count + 1} received.")
+            log("Parsing chunk...")
+            log("Large chunks may take longer to process.")
+
+            merged, stats = merge_workflow_chunk(merged, chunk)
+            chunk_count += 1
+
+            log(
+                f"Chunk {chunk_count} accepted: "
+                f"{len(chunk.get('nodes', []))} nodes, "
+                f"{len(chunk.get('edges', []))} edges."
+            )
+            log(
+                f"  +{stats['new_nodes']} new nodes, "
+                f"{stats['duplicate_nodes']} duplicate nodes merged."
+            )
+            log(
+                f"  +{stats['new_edges']} new edges, "
+                f"{stats['duplicate_edges']} duplicate edges ignored."
+            )
+            log(
+                f"  Accumulated total: "
+                f"{stats['total_nodes']} nodes, "
+                f"{stats['total_edges']} edges."
+            )
+            log("")
+            log(
+                f"Waiting for chunk {chunk_count + 1}... "
+                f"[D] Done  [R] Rename  [X] Cancel"
+            )
+
+            pending = False
+            last_attempt_hash = None
+            readable_announced = False
+            invalid_announced = False
             continue
 
-        next_chunk = chunk_count + 1
+        if literal is not None and not readable_announced:
+            readable_announced = True
+            invalid_announced = True
+            log(
+                "Chunk clipboard content is readable; "
+                "checking for a complete Weave workflow chunk..."
+            )
 
-        log("")
-        log(f"Chunk {next_chunk} clipboard content received.")
-        log("Parsing chunk...")
-        log("Large chunks may take longer to parse.")
-
-        try:
-            chunk = parse_source_text(current)
-        except Exception:
-            log("Clipboard content is not a valid Weavy workflow chunk.")
-            log(f"Still waiting for chunk {next_chunk}...")
-            continue
-
-        merged, stats = merge_workflow_chunk(merged, chunk)
-        chunk_count += 1
-
-        log(
-            f"Chunk {chunk_count} accepted: "
-            f"{len(chunk.get('nodes', []))} nodes, "
-            f"{len(chunk.get('edges', []))} edges."
-        )
-        log(
-            f"  +{stats['new_nodes']} new nodes, "
-            f"{stats['duplicate_nodes']} duplicate nodes merged."
-        )
-        log(
-            f"  +{stats['new_edges']} new edges, "
-            f"{stats['duplicate_edges']} duplicate edges ignored."
-        )
-        log(
-            f"  Accumulated total: "
-            f"{stats['total_nodes']} nodes, "
-            f"{stats['total_edges']} edges."
-        )
-        log("")
-        log(
-            f"Waiting for chunk {chunk_count + 1}... "
-            f"[D] Done  [R] Rename  [X] Cancel"
-        )
+        if (
+            invalid_announced
+            and now - pending_last_activity >= invalid_grace_seconds
+        ):
+            log(
+                "The clipboard content did not resolve to a valid "
+                "Figma Weave workflow chunk."
+            )
+            log(f"Still waiting for chunk {chunk_count + 1}...")
+            pending = False
+            last_attempt_hash = None
+            readable_announced = False
+            invalid_announced = False
 
 
 
